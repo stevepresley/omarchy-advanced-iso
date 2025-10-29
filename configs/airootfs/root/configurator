@@ -155,6 +155,50 @@ while true; do
   fi
 done
 
+# Format and mount selected partition
+step "Preparing partition for installation..."
+
+# Unmount partition if already mounted
+if mountpoint -q "$partition"; then
+  umount "$partition" 2>/dev/null || true
+fi
+
+# Unmount any existing /mnt/archinstall
+if mountpoint -q /mnt/archinstall; then
+  umount -R /mnt/archinstall 2>/dev/null || true
+fi
+
+# Format partition as BTRFS with compression
+echo "Formatting ${partition} as BTRFS..."
+mkfs.btrfs -f "$partition" >/dev/null 2>&1 || abort "Failed to format partition"
+
+# Create mount point
+mkdir -p /mnt/archinstall
+
+# Mount partition
+echo "Mounting partition at /mnt/archinstall..."
+mount -o compress=zstd "$partition" /mnt/archinstall || abort "Failed to mount partition"
+
+# Create BTRFS subvolumes
+echo "Creating BTRFS subvolumes..."
+btrfs subvolume create /mnt/archinstall/@ || abort "Failed to create @ subvolume"
+btrfs subvolume create /mnt/archinstall/@home || abort "Failed to create @home subvolume"
+btrfs subvolume create /mnt/archinstall/@log || abort "Failed to create @log subvolume"
+btrfs subvolume create /mnt/archinstall/@pkg || abort "Failed to create @pkg subvolume"
+
+# Unmount to remount with subvolumes
+umount /mnt/archinstall
+
+# Remount with subvolumes
+mount -o compress=zstd,subvol=@ "$partition" /mnt/archinstall || abort "Failed to mount @ subvolume"
+mkdir -p /mnt/archinstall/{home,var/log,var/cache/pacman/pkg}
+mount -o compress=zstd,subvol=@home "$partition" /mnt/archinstall/home || abort "Failed to mount @home subvolume"
+mount -o compress=zstd,subvol=@log "$partition" /mnt/archinstall/var/log || abort "Failed to mount @log subvolume"
+mount -o compress=zstd,subvol=@pkg "$partition" /mnt/archinstall/var/cache/pacman/pkg || abort "Failed to mount @pkg subvolume"
+
+# Create /boot mount point (will be handled by archinstall for ESP)
+mkdir -p /mnt/archinstall/boot
+
 # STEP 4: ADVANCED OPTIONS
 
 step "Let's configure advanced installation options..."
@@ -218,7 +262,7 @@ Email address,${email_address:-[Skipped]}
 Hostname,$hostname
 Timezone,$timezone
 Keyboard,$keyboard
-Disk,$disk
+Partition,$partition
 Profile,$install_profile
 LUKS Encryption,$([[ "$enable_luks" == "true" ]] && echo "Enabled" || echo "Disabled")
 SSH Server,$([[ "$enable_ssh" == "true" ]] && echo "Enabled" || echo "Disabled")
@@ -297,19 +341,6 @@ cat <<-_EOF_ >user_credentials.json
 }
 _EOF_
 
-# Setup partition layout
-disk_size=$(lsblk -bdno SIZE "$disk")
-mib=$((1024 * 1024))
-gib=$((mib * 1024))
-disk_size_in_mib=$((disk_size / mib * mib)) # Rounds to nearest MiB
-
-gpt_backup_reserve=$((mib))
-boot_partition_start=$((mib))
-boot_partition_size=$((2 * gib))
-
-main_partition_start=$((boot_partition_size + boot_partition_start))
-main_partition_size=$((disk_size_in_mib - main_partition_start - gpt_backup_reserve))
-
 # Detect T2 Mac and set appropriate kernel
 if lspci -nn 2>/dev/null | grep -q "106b:180[12]"; then
   kernel_choice="linux-t2"
@@ -326,67 +357,13 @@ cat <<-_EOF_ >user_configuration.json
     "bootloader": "Limine",
     "custom_commands": [],
     "disk_config": {
-        "btrfs_options": { 
+        "btrfs_options": {
           "snapshot_config": {
             "type": "Snapper"
           }
         },
-        "config_type": "default_layout",
-        "device_modifications": [
-            {
-                "device": "$partition",
-                "partitions": [
-                    {
-                        "btrfs": [],
-                        "dev_path": null,
-                        "flags": [ "boot", "esp" ],
-                        "fs_type": "fat32",
-                        "mount_options": [],
-                        "mountpoint": "/boot",
-                        "obj_id": "ea21d3f2-82bb-49cc-ab5d-6f81ae94e18d",
-                        "size": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $boot_partition_size
-                        },
-                        "start": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $boot_partition_start
-                        },
-                        "status": "create",
-                        "type": "primary"
-                    },
-                    {
-                        "btrfs": [
-                            { "mountpoint": "/", "name": "@" },
-                            { "mountpoint": "/home", "name": "@home" },
-                            { "mountpoint": "/var/log", "name": "@log" },
-                            { "mountpoint": "/var/cache/pacman/pkg", "name": "@pkg" }
-                        ],
-                        "dev_path": null,
-                        "flags": [],
-                        "fs_type": "btrfs",
-                        "mount_options": [ "compress=zstd" ],
-                        "mountpoint": null,
-                        "obj_id": "8c2c2b92-1070-455d-b76a-56263bab24aa",
-                        "size": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $main_partition_size
-                        },
-                        "start": {
-                            "sector_size": { "unit": "B", "value": 512 },
-                            "unit": "B",
-                            "value": $main_partition_start
-                        },
-                        "status": "create",
-                        "type": "primary"
-                    }
-                ],
-                "wipe": true
-            }
-        ]_DISK_ENCRYPTION_PLACEHOLDER_
+        "config_type": "pre_mounted",
+        "device_modifications": []_DISK_ENCRYPTION_PLACEHOLDER_
     },
     "hostname": "$hostname",
     "kernels": [ "$kernel_choice" ],
