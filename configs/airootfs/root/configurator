@@ -132,7 +132,7 @@ partition_form() {
   step "Let's select where to install Omarchy..."
 
   # Use omarchy-partition-select utility to get partition selection
-  partition=$(/root/bin/omarchy-partition-select 2>&1) || abort "No partition selected"
+  partition=$(/root/omarchy/bin/omarchy-partition-select 2>&1) || abort "No partition selected"
 
   # Validate partition size >= 16GB
   local partition_size_bytes
