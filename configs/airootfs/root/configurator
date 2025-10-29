@@ -1,19 +1,13 @@
 #!/bin/bash
 
-# Exit on any error to match upstream behavior
+# Exit on any error
 set -eEo pipefail
 
-# Define Omarchy locations (matches install.sh)
-export OMARCHY_PATH="/root/omarchy"
-export OMARCHY_INSTALL="$OMARCHY_PATH/install"
-export OMARCHY_INSTALL_LOG_FILE="/var/log/omarchy-install.log"
-export PATH="$OMARCHY_PATH/bin:$PATH"
-
-# Rely on Omarchy for styling and error handling
-source "$OMARCHY_INSTALL/helpers/all.sh"
-
-# NOTE: Logging is initialized by .automated_script.sh AFTER configurator completes
-# The configurator just generates JSON files; the outer script handles logging setup
+# Source ONLY presentation helpers for styling functions (gum, clear_logo, etc)
+# Do NOT source helpers/all.sh because it sets up error traps that reference the log file
+# The .automated_script.sh handles logging initialization and error handling
+OMARCHY_INSTALL="/root/omarchy/install"
+source "$OMARCHY_INSTALL/helpers/presentation.sh"
 
 # Ensure tzupdate is available for guessing timezone
 command -v tzupdate >/dev/null || sudo pacman -Sy --noconfirm tzupdate
