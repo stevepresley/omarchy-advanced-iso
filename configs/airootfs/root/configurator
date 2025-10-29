@@ -120,63 +120,38 @@ user_form() {
 
 user_form
 
-# STEP 3: DISK
+# STEP 3: PARTITION
 
-get_disk_info() {
-  local device="$1"
-  local size model
-
-  # Get basic disk information
-  size=$(lsblk -dno SIZE "$device" 2>/dev/null)
-  model=$(lsblk -dno MODEL "$device" 2>/dev/null | sed 's/^[[:space:]]*//' | sed 's/[[:space:]]*$//')
-
-  # Format display string
-  local display="$device"
-  [[ -n "$size" ]] && display="$display ($size)"
-  [[ -n "$model" ]] && display="$display - $model"
-
-  echo "$display"
-}
-
-disk_form() {
+partition_form() {
   step "Let's select where to install Omarchy..."
 
-  # Don't offer the install media as an option (Arch ISO mounts it here)
-  local exclude_disk
-  exclude_disk=$(findmnt -no SOURCE /run/archiso/bootmnt 2>/dev/null || true)
+  # Use omarchy-partition-select utility to get partition selection
+  partition=$(/root/bin/omarchy-partition-select 2>&1) || abort "No partition selected"
 
-  # List all installable disks, excluding the boot device if present
-  local available_disks
-  available_disks=$(
-    lsblk -dpno NAME,TYPE |
-      awk '$2=="disk"{print $1}' |
-      grep -E '/dev/(sd|hd|vd|nvme|mmcblk|xv)' |
-      { if [[ -n "$exclude_disk" ]]; then grep -Fvx "$exclude_disk"; else cat; fi; }
-  )
+  # Validate partition size >= 16GB
+  local partition_size_bytes
+  partition_size_bytes=$(lsblk -dno SIZE -b "$partition" 2>/dev/null | numfmt --from=iec 2>/dev/null || echo 0)
+  local min_size_bytes=$((16 * 1024 * 1024 * 1024))  # 16GB in bytes
 
-  # Get available disks and format them with info
-  local disk_options=""
-  while IFS= read -r device; do
-    if [[ -n "$device" ]]; then
-      disk_info=$(get_disk_info "$device")
-      disk_options="$disk_options$disk_info"$'\n'
-    fi
-  done <<<"$available_disks"
-
-  selected_display=$(echo "$disk_options" | gum choose --header "Select install disk") || abort
-  disk=$(echo "$selected_display" | awk '{print $1}')
+  if (( partition_size_bytes < min_size_bytes )); then
+    gum style --bold --foreground 1 "Error: Partition must be at least 16GB"
+    echo
+    partition_form
+    return
+  fi
 }
 
-disk_form
+partition_form
 
 while true; do
-  gum style "Everything will be overwritten. There is no recovery possible."
+  gum style "The selected partition will be formatted and Omarchy will be installed to it."
+  gum style "All data on the partition will be lost. There is no recovery possible."
 
   echo
-  if gum confirm --affirmative "Yes, format disk" --negative "No, change it" "Confirm overwriting ${disk}"; then
+  if gum confirm --affirmative "Yes, format partition" --negative "No, change it" "Confirm installing to ${partition}"; then
     break
   else
-    disk_form
+    partition_form
   fi
 done
 
@@ -359,7 +334,7 @@ cat <<-_EOF_ >user_configuration.json
         "config_type": "default_layout",
         "device_modifications": [
             {
-                "device": "$disk",
+                "device": "$partition",
                 "partitions": [
                     {
                         "btrfs": [],
