@@ -4,7 +4,7 @@
 set -eEo pipefail
 
 # Define Omarchy locations (matches install.sh)
-export OMARCHY_PATH="$HOME/.local/share/omarchy"
+export OMARCHY_PATH="/root/omarchy"
 export OMARCHY_INSTALL="$OMARCHY_PATH/install"
 export OMARCHY_INSTALL_LOG_FILE="/var/log/omarchy-install.log"
 export PATH="$OMARCHY_PATH/bin:$PATH"
@@ -12,8 +12,8 @@ export PATH="$OMARCHY_PATH/bin:$PATH"
 # Rely on Omarchy for styling and error handling
 source "$OMARCHY_INSTALL/helpers/all.sh"
 
-# Initialize logging for the configurator (matches preflight/begin.sh pattern)
-start_install_log
+# NOTE: Logging is initialized by .automated_script.sh AFTER configurator completes
+# The configurator just generates JSON files; the outer script handles logging setup
 
 # Ensure tzupdate is available for guessing timezone
 command -v tzupdate >/dev/null || sudo pacman -Sy --noconfirm tzupdate
@@ -453,6 +453,3 @@ if [[ $1 == "dry" ]]; then
 
   rm user_configuration.json user_credentials.json user_full_name.txt user_email_address.txt omarchy_advanced_state.json
 fi
-
-# Stop logging and show summary (matches upstream pattern)
-stop_install_log
