@@ -3,10 +3,13 @@
 # Exit on any error
 set -eEo pipefail
 
+# Set OMARCHY_PATH before sourcing helpers (needed for logo.txt and other file references)
+export OMARCHY_PATH="/root/omarchy"
+
 # Source ONLY presentation helpers for styling functions (gum, clear_logo, etc)
 # Do NOT source helpers/all.sh because it sets up error traps that reference the log file
 # The .automated_script.sh handles logging initialization and error handling
-OMARCHY_INSTALL="/root/omarchy/install"
+OMARCHY_INSTALL="$OMARCHY_PATH/install"
 source "$OMARCHY_INSTALL/helpers/presentation.sh"
 
 # Ensure tzupdate is available for guessing timezone
@@ -132,19 +135,8 @@ partition_form() {
   step "Let's select where to install Omarchy..."
 
   # Use omarchy-partition-select utility to get partition selection
-  partition=$(/root/omarchy/bin/omarchy-partition-select 2>&1) || abort "No partition selected"
-
-  # Validate partition size >= 16GB
-  local partition_size_bytes
-  partition_size_bytes=$(lsblk -dno SIZE -b "$partition" 2>/dev/null | numfmt --from=iec 2>/dev/null || echo 0)
-  local min_size_bytes=$((16 * 1024 * 1024 * 1024))  # 16GB in bytes
-
-  if (( partition_size_bytes < min_size_bytes )); then
-    gum style --bold --foreground 1 "Error: Partition must be at least 16GB"
-    echo
-    partition_form
-    return
-  fi
+  # partition-select handles validation and size checking
+  partition=$(/root/omarchy/bin/omarchy-partition-select) || abort "No valid partition selected"
 }
 
 partition_form
