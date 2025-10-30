@@ -23,4 +23,5 @@ file_permissions=(
   ["/root/configurator"]="0:0:755"
   ["/var/cache/omarchy/mirror/offline/"]="0:0:775"
   ["/usr/local/bin/omarchy-upload-log"]="0:0:755"
+  ["/root/omarchy/bin/"]="0:0:755"
 )
