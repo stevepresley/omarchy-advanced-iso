@@ -360,7 +360,7 @@ cat <<-_EOF_ >user_configuration.json
             "type": "Snapper"
           }
         },
-        "config_type": "pre_mounted",
+        "config_type": "pre_mounted_config",
         "device_modifications": []_DISK_ENCRYPTION_PLACEHOLDER_
     },
     "hostname": "$hostname",
