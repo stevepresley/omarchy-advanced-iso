@@ -136,7 +136,25 @@ partition_form() {
 
   # Use omarchy-partition-select utility to get partition selection
   # partition-select handles validation and size checking
-  partition=$(/root/omarchy/bin/omarchy-partition-select) || abort "No valid partition selected"
+  selected_device=$(/root/omarchy/bin/omarchy-partition-select) || abort "No valid install target selected"
+  device_type=$(lsblk -no TYPE "$selected_device" 2>/dev/null | head -n1)
+
+  if [[ "$device_type" == "disk" ]]; then
+    disk="$selected_device"
+    echo "Preparing entire disk $disk for installation..."
+    wipefs -a "$disk" >/dev/null 2>&1 || abort "Failed to wipe disk signatures"
+    parted -s "$disk" mklabel gpt || abort "Failed to create GPT label"
+    parted -s "$disk" mkpart primary 1MiB 100% || abort "Failed to create primary partition"
+    partprobe "$disk" >/dev/null 2>&1 || true
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle >/dev/null 2>&1 || true
+    fi
+    partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
+    [[ -n "$partition" ]] || abort "Failed to detect new partition on $disk"
+  else
+    partition="$selected_device"
+  fi
+
 }
 
 partition_form
@@ -165,6 +183,10 @@ fi
 if mountpoint -q /mnt/archinstall; then
   umount -R /mnt/archinstall 2>/dev/null || true
 fi
+
+# Wipe existing filesystem signatures (handles previous LUKS headers, etc.)
+echo "Wiping existing filesystem signatures..."
+wipefs -a "$partition" >/dev/null 2>&1 || abort "Failed to wipe partition signatures"
 
 # Format partition as BTRFS with compression
 echo "Formatting ${partition} as BTRFS..."
@@ -360,7 +382,7 @@ cat <<-_EOF_ >user_configuration.json
             "type": "Snapper"
           }
         },
-        "config_type": "pre_mounted_config",
+        "config_type": "Pre_mount",
         "device_modifications": []_DISK_ENCRYPTION_PLACEHOLDER_
     },
     "hostname": "$hostname",
