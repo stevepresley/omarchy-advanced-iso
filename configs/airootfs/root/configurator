@@ -15,6 +15,13 @@ source "$OMARCHY_INSTALL/helpers/presentation.sh"
 # Ensure tzupdate is available for guessing timezone
 command -v tzupdate >/dev/null || sudo pacman -Sy --noconfirm tzupdate
 
+CONFIG_LOG="/tmp/configurator.log"
+touch "$CONFIG_LOG" 2>/dev/null || true
+
+log_debug() {
+  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$CONFIG_LOG"
+}
+
 abort() {
   gum style "${1:-Aborted installation}"
   echo
@@ -142,38 +149,91 @@ partition_form() {
   if [[ "$device_type" == "disk" ]]; then
     disk="$selected_device"
     echo "Preparing entire disk $disk for installation..."
+    log_debug "Preparing disk $disk for full install"
+    {
+      echo "--- lsblk tree for $disk ---"
+      lsblk -lnpo NAME,TYPE,MOUNTPOINTS "$disk"
+      echo "--- /proc/swaps ---"
+      cat /proc/swaps
+    } >>"$CONFIG_LOG" 2>&1
     # Detach any partitions, mounts, or swaps that keep the disk busy
     while read -r child child_type; do
       [[ -z "$child" ]] && continue
+      log_debug "Processing child $child (type=$child_type)"
       case "$child_type" in
         part)
           # Disable swap if this partition/device is active
           if awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null | grep -Fxq "$child"; then
-            swapoff "$child" >/dev/null 2>&1 || true
+            log_debug "swapoff $child"
+            if swapoff "$child" >>"$CONFIG_LOG" 2>&1; then
+              log_debug "swapoff succeeded for $child"
+            else
+              log_debug "swapoff failed for $child"
+            fi
           fi
           # Unmount any active mount points for this device
-          while read -r target; do
+          mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
+          for target in "${targets[@]}"; do
             [[ -z "$target" ]] && continue
-            umount "$target" >/dev/null 2>&1 || true
-          done < <(findmnt -rn "$child" -o TARGET 2>/dev/null)
+            log_debug "umount $target (child $child)"
+            if umount "$target" >>"$CONFIG_LOG" 2>&1; then
+              log_debug "umount succeeded for $target"
+            else
+              log_debug "umount failed for $target"
+            fi
+          done
           ;;
         crypt)
-          while read -r target; do
+          mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
+          for target in "${targets[@]}"; do
             [[ -z "$target" ]] && continue
-            umount "$target" >/dev/null 2>&1 || true
-          done < <(findmnt -rn "$child" -o TARGET 2>/dev/null)
+            log_debug "umount $target (crypt child $child)"
+            if umount "$target" >>"$CONFIG_LOG" 2>&1; then
+              log_debug "umount succeeded for $target"
+            else
+              log_debug "umount failed for $target"
+            fi
+          done
           if command -v cryptsetup >/dev/null 2>&1; then
             mapper_name=$(lsblk -no NAME "$child" 2>/dev/null | head -n1)
-            [[ -n "$mapper_name" ]] && cryptsetup close "$mapper_name" >/dev/null 2>&1 || true
+            if [[ -n "$mapper_name" ]]; then
+              log_debug "Closing LUKS mapping $mapper_name for $child"
+              if cryptsetup close "$mapper_name" >>"$CONFIG_LOG" 2>&1; then
+                log_debug "Closed LUKS mapping $mapper_name"
+              else
+                log_debug "Failed to close LUKS mapping $mapper_name"
+              fi
+            else
+              log_debug "No mapper name found for $child"
+            fi
           fi
           ;;
         *)
+          log_debug "No cleanup actions for child type $child_type"
           ;;
       esac
     done < <(lsblk -lnpo NAME,TYPE "$disk" | tail -n +2)
-    wipefs -a "$disk" >/dev/null 2>&1 || abort "Failed to wipe disk signatures"
-    parted -s "$disk" mklabel gpt || abort "Failed to create GPT label"
-    parted -s "$disk" mkpart primary 1MiB 100% || abort "Failed to create primary partition"
+    log_debug "Running wipefs -a $disk"
+    if wipefs -a "$disk" >>"$CONFIG_LOG" 2>&1; then
+      log_debug "wipefs succeeded for $disk"
+    else
+      log_debug "wipefs FAILED for $disk"
+      abort "Failed to wipe disk signatures"
+    fi
+    log_debug "Creating GPT label on $disk"
+    if parted -s "$disk" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
+      log_debug "Created GPT label on $disk"
+    else
+      log_debug "Failed to create GPT label on $disk"
+      abort "Failed to create GPT label"
+    fi
+    log_debug "Creating single partition on $disk"
+    if parted -s "$disk" mkpart primary 1MiB 100% >>"$CONFIG_LOG" 2>&1; then
+      log_debug "Created primary partition on $disk"
+    else
+      log_debug "Failed to create primary partition on $disk"
+      abort "Failed to create primary partition"
+    fi
     partprobe "$disk" >/dev/null 2>&1 || true
     if command -v udevadm >/dev/null 2>&1; then
       udevadm settle >/dev/null 2>&1 || true
