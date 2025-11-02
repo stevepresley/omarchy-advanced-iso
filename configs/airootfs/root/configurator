@@ -142,6 +142,35 @@ partition_form() {
   if [[ "$device_type" == "disk" ]]; then
     disk="$selected_device"
     echo "Preparing entire disk $disk for installation..."
+    # Detach any partitions, mounts, or swaps that keep the disk busy
+    while read -r child child_type; do
+      [[ -z "$child" ]] && continue
+      case "$child_type" in
+        part)
+          # Disable swap if this partition/device is active
+          if awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null | grep -Fxq "$child"; then
+            swapoff "$child" >/dev/null 2>&1 || true
+          fi
+          # Unmount any active mount points for this device
+          while read -r target; do
+            [[ -z "$target" ]] && continue
+            umount "$target" >/dev/null 2>&1 || true
+          done < <(findmnt -rn "$child" -o TARGET 2>/dev/null)
+          ;;
+        crypt)
+          while read -r target; do
+            [[ -z "$target" ]] && continue
+            umount "$target" >/dev/null 2>&1 || true
+          done < <(findmnt -rn "$child" -o TARGET 2>/dev/null)
+          if command -v cryptsetup >/dev/null 2>&1; then
+            mapper_name=$(lsblk -no NAME "$child" 2>/dev/null | head -n1)
+            [[ -n "$mapper_name" ]] && cryptsetup close "$mapper_name" >/dev/null 2>&1 || true
+          fi
+          ;;
+        *)
+          ;;
+      esac
+    done < <(lsblk -lnpo NAME,TYPE "$disk" | tail -n +2)
     wipefs -a "$disk" >/dev/null 2>&1 || abort "Failed to wipe disk signatures"
     parted -s "$disk" mklabel gpt || abort "Failed to create GPT label"
     parted -s "$disk" mkpart primary 1MiB 100% || abort "Failed to create primary partition"
