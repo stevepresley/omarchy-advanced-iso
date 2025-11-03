@@ -22,6 +22,209 @@ log_debug() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >>"$CONFIG_LOG"
 }
 
+INSTALL_MODE=""
+INSTALL_DISK=""
+BOOT_PARTITION=""
+SUMMARY_INSTALL_TARGET=""
+SUMMARY_BOOT_TARGET=""
+
+cleanup_disk_children() {
+  local disk="$1"
+  log_debug "Detaching existing mappings on $disk"
+  {
+    echo "--- lsblk tree for $disk ---"
+    lsblk -lnpo NAME,TYPE,MOUNTPOINTS "$disk"
+    echo "--- /proc/swaps ---"
+    cat /proc/swaps
+  } >>"$CONFIG_LOG" 2>&1
+
+  while read -r child child_type; do
+    [[ -z "$child" ]] && continue
+    log_debug "Processing child $child (type=$child_type)"
+    case "$child_type" in
+      part)
+        if awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null | grep -Fxq "$child"; then
+          log_debug "swapoff $child"
+          swapoff "$child" >>"$CONFIG_LOG" 2>&1 || log_debug "swapoff failed for $child"
+        fi
+        mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
+        if ((${#targets[@]})); then
+          mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF' | sort -r)
+        fi
+        for target in "${targets[@]}"; do
+          [[ -z "$target" ]] && continue
+          log_debug "umount $target"
+          if ! umount "$target" >>"$CONFIG_LOG" 2>&1; then
+            log_debug "umount failed for $target, retrying with -R"
+            umount -R "$target" >>"$CONFIG_LOG" 2>&1 || log_debug "umount -R failed for $target"
+          fi
+        done
+        ;;
+      crypt)
+        mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
+        if ((${#targets[@]})); then
+          mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF' | sort -r)
+        fi
+        for target in "${targets[@]}"; do
+          [[ -z "$target" ]] && continue
+          log_debug "umount $target (crypt)"
+          if ! umount "$target" >>"$CONFIG_LOG" 2>&1; then
+            log_debug "umount failed for $target, retrying with -R"
+            umount -R "$target" >>"$CONFIG_LOG" 2>&1 || log_debug "umount -R failed for $target"
+          fi
+        done
+        if command -v cryptsetup >/dev/null 2>&1; then
+          local mapper_name
+          mapper_name=$(lsblk -no NAME "$child" 2>/dev/null | head -n1)
+          if [[ -n "$mapper_name" ]]; then
+            log_debug "Closing LUKS mapping $mapper_name"
+            cryptsetup close "$mapper_name" >>"$CONFIG_LOG" 2>&1 || log_debug "Failed to close $mapper_name"
+          fi
+        fi
+        ;;
+      *)
+        log_debug "No cleanup actions for child type $child_type"
+        ;;
+    esac
+  done < <(lsblk -lnpo NAME,TYPE "$disk" | tail -n +2)
+
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle >>"$CONFIG_LOG" 2>&1 || true
+  fi
+}
+
+select_boot_partition() {
+  local root_part="$1"
+  local root_disk
+  root_disk=$(lsblk -no PKNAME "$root_part" 2>/dev/null | head -n1)
+
+  local candidate_names=()
+  local candidate_display=()
+
+  while read -r name fstype size type mountpoint pkname; do
+    [[ "$type" != "part" ]] && continue
+    [[ "$name" == "$root_part" ]] && continue
+    case "$fstype" in
+      vfat|fat|fat32|efi|msdos) ;;
+      *) continue ;;
+    esac
+    local display="$name ($size, ${fstype:-unknown}"
+    if [[ -n "$mountpoint" ]]; then
+      display="$display, mounted at $mountpoint"
+    fi
+    if [[ -n "$root_disk" && "$pkname" == "$root_disk" ]]; then
+      display="$display, same disk"
+    fi
+    display="$display)"
+    candidate_names+=("$name")
+    candidate_display+=("$display")
+  done < <(lsblk -lnpo NAME,FSTYPE,SIZE,TYPE,MOUNTPOINT,PKNAME)
+
+  if ((${#candidate_names[@]} == 0)); then
+    abort "No FAT/EFI partition found. Create an ESP before continuing."
+  fi
+
+  if ((${#candidate_names[@]} == 1)); then
+    echo "${candidate_names[0]}"
+    return 0
+  fi
+
+  local default_display=""
+  if [[ -n "$BOOT_PARTITION" ]]; then
+    for i in "${!candidate_names[@]}"; do
+      if [[ "${candidate_names[$i]}" == "$BOOT_PARTITION" ]]; then
+        default_display="${candidate_display[$i]}"
+        break
+      fi
+    done
+  fi
+
+  local selection
+  if [[ -n "$default_display" ]]; then
+    selection=$(printf '%s\n' "${candidate_display[@]}" | gum choose --header "Select EFI/boot partition" --selected "$default_display") || abort
+  else
+    selection=$(printf '%s\n' "${candidate_display[@]}" | gum choose --header "Select EFI/boot partition") || abort
+  fi
+
+  for i in "${!candidate_display[@]}"; do
+    if [[ "${candidate_display[$i]}" == "$selection" ]]; then
+      echo "${candidate_names[$i]}"
+      return 0
+    fi
+  done
+
+  abort "Invalid boot partition selection"
+}
+
+prepare_disk_layout() {
+  local disk="$1"
+  cleanup_disk_children "$disk"
+
+  log_debug "Creating ESP and root partitions on $disk"
+  if ! wipefs -a "$disk" >>"$CONFIG_LOG" 2>&1; then
+    log_debug "wipefs failed on $disk"
+    abort "Failed to wipe disk signatures"
+  fi
+  if ! parted -s "$disk" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
+    abort "Failed to create GPT label"
+  fi
+  if ! parted -s "$disk" mkpart primary fat32 1MiB 2049MiB >>"$CONFIG_LOG" 2>&1; then
+    abort "Failed to create FAT32 boot partition"
+  fi
+  parted -s "$disk" set 1 esp on >>"$CONFIG_LOG" 2>&1 || abort "Failed to mark ESP partition"
+  if ! parted -s "$disk" mkpart primary btrfs 2049MiB 100% >>"$CONFIG_LOG" 2>&1; then
+    abort "Failed to create root partition"
+  fi
+  partprobe "$disk" >>"$CONFIG_LOG" 2>&1 || true
+  if command -v udevadm >/dev/null 2>&1; then
+    udevadm settle >>"$CONFIG_LOG" 2>&1 || true
+  fi
+
+  BOOT_PARTITION=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
+  partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==3')
+  SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+  log_debug "Created boot partition $BOOT_PARTITION and root partition $partition on $disk"
+}
+
+prepare_install_target() {
+  if [[ "$INSTALL_MODE" == "disk" ]]; then
+    [[ -z "$INSTALL_DISK" ]] && abort "No disk selected for installation"
+    prepare_disk_layout "$INSTALL_DISK"
+  else
+    [[ -n "$BOOT_PARTITION" ]] || BOOT_PARTITION=$(select_boot_partition "$partition")
+    SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+    log_debug "Using boot partition $BOOT_PARTITION for installation"
+  fi
+}
+
+mount_boot_partition() {
+  if [[ -z "${BOOT_PARTITION:-}" ]]; then
+    log_debug "No boot partition defined; skipping mount"
+    return
+  fi
+
+  local existing_target
+  existing_target=$(findmnt -rn "$BOOT_PARTITION" -o TARGET 2>/dev/null || true)
+  if [[ -n "$existing_target" ]]; then
+    log_debug "Unmounting $BOOT_PARTITION from $existing_target"
+    umount "$existing_target" >>"$CONFIG_LOG" 2>&1 || log_debug "Failed to unmount $existing_target"
+  fi
+
+  if [[ "$INSTALL_MODE" == "disk" ]]; then
+    log_debug "Wiping filesystem signatures from $BOOT_PARTITION"
+    wipefs -a "$BOOT_PARTITION" >>"$CONFIG_LOG" 2>&1 || log_debug "wipefs reported issues on $BOOT_PARTITION"
+    log_debug "Formatting $BOOT_PARTITION as FAT32"
+    if ! mkfs.vfat -F32 "$BOOT_PARTITION" >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to format boot partition $BOOT_PARTITION"
+    fi
+  fi
+
+  log_debug "Mounting $BOOT_PARTITION at /mnt/archinstall/boot"
+  if ! mount "$BOOT_PARTITION" /mnt/archinstall/boot >>"$CONFIG_LOG" 2>&1; then
+    abort "Failed to mount boot partition $BOOT_PARTITION"
+  fi
+}
+
 abort() {
   gum style "${1:-Aborted installation}"
   echo
@@ -141,109 +344,28 @@ user_form
 partition_form() {
   step "Let's select where to install Omarchy..."
 
-  # Use omarchy-partition-select utility to get partition selection
-  # partition-select handles validation and size checking
   selected_device=$(/root/omarchy/bin/omarchy-partition-select) || abort "No valid install target selected"
   device_type=$(lsblk -no TYPE "$selected_device" 2>/dev/null | head -n1)
 
-  if [[ "$device_type" == "disk" ]]; then
-    disk="$selected_device"
-    echo "Preparing entire disk $disk for installation..."
-    log_debug "Preparing disk $disk for full install"
-    {
-      echo "--- lsblk tree for $disk ---"
-      lsblk -lnpo NAME,TYPE,MOUNTPOINTS "$disk"
-      echo "--- /proc/swaps ---"
-      cat /proc/swaps
-    } >>"$CONFIG_LOG" 2>&1
-    # Detach any partitions, mounts, or swaps that keep the disk busy
-    while read -r child child_type; do
-      [[ -z "$child" ]] && continue
-      log_debug "Processing child $child (type=$child_type)"
-      case "$child_type" in
-        part)
-          # Disable swap if this partition/device is active
-          if awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null | grep -Fxq "$child"; then
-            log_debug "swapoff $child"
-            if swapoff "$child" >>"$CONFIG_LOG" 2>&1; then
-              log_debug "swapoff succeeded for $child"
-            else
-              log_debug "swapoff failed for $child"
-            fi
-          fi
-          # Unmount any active mount points for this device
-          mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
-          for target in "${targets[@]}"; do
-            [[ -z "$target" ]] && continue
-            log_debug "umount $target (child $child)"
-            if umount "$target" >>"$CONFIG_LOG" 2>&1; then
-              log_debug "umount succeeded for $target"
-            else
-              log_debug "umount failed for $target"
-            fi
-          done
-          ;;
-        crypt)
-          mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
-          for target in "${targets[@]}"; do
-            [[ -z "$target" ]] && continue
-            log_debug "umount $target (crypt child $child)"
-            if umount "$target" >>"$CONFIG_LOG" 2>&1; then
-              log_debug "umount succeeded for $target"
-            else
-              log_debug "umount failed for $target"
-            fi
-          done
-          if command -v cryptsetup >/dev/null 2>&1; then
-            mapper_name=$(lsblk -no NAME "$child" 2>/dev/null | head -n1)
-            if [[ -n "$mapper_name" ]]; then
-              log_debug "Closing LUKS mapping $mapper_name for $child"
-              if cryptsetup close "$mapper_name" >>"$CONFIG_LOG" 2>&1; then
-                log_debug "Closed LUKS mapping $mapper_name"
-              else
-                log_debug "Failed to close LUKS mapping $mapper_name"
-              fi
-            else
-              log_debug "No mapper name found for $child"
-            fi
-          fi
-          ;;
-        *)
-          log_debug "No cleanup actions for child type $child_type"
-          ;;
-      esac
-    done < <(lsblk -lnpo NAME,TYPE "$disk" | tail -n +2)
-    log_debug "Running wipefs -a $disk"
-    if wipefs -a "$disk" >>"$CONFIG_LOG" 2>&1; then
-      log_debug "wipefs succeeded for $disk"
-    else
-      log_debug "wipefs FAILED for $disk"
-      abort "Failed to wipe disk signatures"
-    fi
-    log_debug "Creating GPT label on $disk"
-    if parted -s "$disk" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
-      log_debug "Created GPT label on $disk"
-    else
-      log_debug "Failed to create GPT label on $disk"
-      abort "Failed to create GPT label"
-    fi
-    log_debug "Creating single partition on $disk"
-    if parted -s "$disk" mkpart primary 1MiB 100% >>"$CONFIG_LOG" 2>&1; then
-      log_debug "Created primary partition on $disk"
-    else
-      log_debug "Failed to create primary partition on $disk"
-      abort "Failed to create primary partition"
-    fi
-    partprobe "$disk" >/dev/null 2>&1 || true
-    if command -v udevadm >/dev/null 2>&1; then
-      udevadm settle >/dev/null 2>&1 || true
-    fi
-    partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
-    [[ -n "$partition" ]] || abort "Failed to detect new partition on $disk"
-  else
-    partition="$selected_device"
-  fi
+  BOOT_PARTITION=""
+  SUMMARY_BOOT_TARGET=""
 
+  if [[ "$device_type" == "disk" ]]; then
+    INSTALL_MODE="disk"
+    INSTALL_DISK="$selected_device"
+    disk="$selected_device"
+    partition=""
+    SUMMARY_INSTALL_TARGET="$selected_device (entire disk)"
+    SUMMARY_BOOT_TARGET="[Will create ESP automatically]"
+  else
+    INSTALL_MODE="partition"
+    partition="$selected_device"
+    disk="/dev/$(lsblk -no PKNAME "$partition" 2>/dev/null | head -n1)"
+    [[ -n "$disk" ]] || disk="(unknown)"
+    BOOT_PARTITION=$(select_boot_partition "$partition")
+    SUMMARY_INSTALL_TARGET="$partition"
+    SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+  fi
 }
 
 partition_form
@@ -259,6 +381,11 @@ while true; do
     partition_form
   fi
 done
+
+prepare_install_target
+if [[ "$INSTALL_MODE" == "disk" && -n "$partition" ]]; then
+  SUMMARY_INSTALL_TARGET="$partition"
+fi
 
 # Format and mount selected partition
 step "Preparing partition for installation..."
@@ -305,8 +432,8 @@ mount -o compress=zstd,subvol=@home "$partition" /mnt/archinstall/home || abort 
 mount -o compress=zstd,subvol=@log "$partition" /mnt/archinstall/var/log || abort "Failed to mount @log subvolume"
 mount -o compress=zstd,subvol=@pkg "$partition" /mnt/archinstall/var/cache/pacman/pkg || abort "Failed to mount @pkg subvolume"
 
-# Create /boot mount point (will be handled by archinstall for ESP)
 mkdir -p /mnt/archinstall/boot
+mount_boot_partition
 
 # STEP 4: ADVANCED OPTIONS
 
@@ -371,7 +498,8 @@ Email address,${email_address:-[Skipped]}
 Hostname,$hostname
 Timezone,$timezone
 Keyboard,$keyboard
-Partition,$partition
+Install Target,$SUMMARY_INSTALL_TARGET
+Boot Partition,$SUMMARY_BOOT_TARGET
 Profile,$install_profile
 LUKS Encryption,$([[ "$enable_luks" == "true" ]] && echo "Enabled" || echo "Disabled")
 SSH Server,$([[ "$enable_ssh" == "true" ]] && echo "Enabled" || echo "Disabled")
@@ -381,7 +509,7 @@ Keybinding Remap,$([[ "$remap_keybindings" == "true" ]] && echo "Enabled (CTRL+A
   echo -e "$summary_table" | gum table -s "," -p | sed "s/^/${PADDING_LEFT_SPACES}/"
 
   echo
-  if gum confirm --negative "No, change it" "Does this look right?"; then
+  if gum confirm --negative "No, change it" "Confirm installing to ${SUMMARY_INSTALL_TARGET}"; then
     break
   else
     # User wants to change settings - restart the entire flow
