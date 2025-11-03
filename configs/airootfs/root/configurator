@@ -25,6 +25,7 @@ log_debug() {
 INSTALL_MODE=""
 INSTALL_DISK=""
 BOOT_PARTITION=""
+BOOT_PARTITION_FSTYPE=""
 SUMMARY_INSTALL_TARGET=""
 SUMMARY_BOOT_TARGET=""
 
@@ -99,15 +100,12 @@ select_boot_partition() {
   root_disk=$(lsblk -no PKNAME "$root_part" 2>/dev/null | head -n1)
 
   local candidate_names=()
+  local candidate_fstypes=()
   local candidate_display=()
 
   while read -r name fstype size type mountpoint pkname; do
     [[ "$type" != "part" ]] && continue
     [[ "$name" == "$root_part" ]] && continue
-    case "$fstype" in
-      vfat|fat|fat32|efi|msdos) ;;
-      *) continue ;;
-    esac
     local display="$name ($size, ${fstype:-unknown}"
     if [[ -n "$mountpoint" ]]; then
       display="$display, mounted at $mountpoint"
@@ -117,15 +115,18 @@ select_boot_partition() {
     fi
     display="$display)"
     candidate_names+=("$name")
+    candidate_fstypes+=("$fstype")
     candidate_display+=("$display")
   done < <(lsblk -lnpo NAME,FSTYPE,SIZE,TYPE,MOUNTPOINT,PKNAME)
 
   if ((${#candidate_names[@]} == 0)); then
-    abort "No FAT/EFI partition found. Create an ESP before continuing."
+    abort "No sibling partition available for boot files. Create or free an ESP first."
   fi
 
   if ((${#candidate_names[@]} == 1)); then
-    echo "${candidate_names[0]}"
+    BOOT_PARTITION="${candidate_names[0]}"
+    BOOT_PARTITION_FSTYPE="${candidate_fstypes[0]}"
+    echo "$BOOT_PARTITION"
     return 0
   fi
 
@@ -148,7 +149,9 @@ select_boot_partition() {
 
   for i in "${!candidate_display[@]}"; do
     if [[ "${candidate_display[$i]}" == "$selection" ]]; then
-      echo "${candidate_names[$i]}"
+      BOOT_PARTITION="${candidate_names[$i]}"
+      BOOT_PARTITION_FSTYPE="${candidate_fstypes[$i]}"
+      echo "$BOOT_PARTITION"
       return 0
     fi
   done
@@ -210,13 +213,14 @@ mount_boot_partition() {
     umount "$existing_target" >>"$CONFIG_LOG" 2>&1 || log_debug "Failed to unmount $existing_target"
   fi
 
-  if [[ "$INSTALL_MODE" == "disk" ]]; then
-    log_debug "Wiping filesystem signatures from $BOOT_PARTITION"
+  local fstype_normalized="${BOOT_PARTITION_FSTYPE,,}"
+  if [[ "$INSTALL_MODE" == "disk" || ! "$fstype_normalized" =~ ^(vfat|fat|fat32|efi|msdos)$ ]]; then
+    log_debug "Ensuring $BOOT_PARTITION is formatted as FAT32 (current type: ${BOOT_PARTITION_FSTYPE:-unknown})"
     wipefs -a "$BOOT_PARTITION" >>"$CONFIG_LOG" 2>&1 || log_debug "wipefs reported issues on $BOOT_PARTITION"
-    log_debug "Formatting $BOOT_PARTITION as FAT32"
     if ! mkfs.vfat -F32 "$BOOT_PARTITION" >>"$CONFIG_LOG" 2>&1; then
       abort "Failed to format boot partition $BOOT_PARTITION"
     fi
+    BOOT_PARTITION_FSTYPE="vfat"
   fi
 
   log_debug "Mounting $BOOT_PARTITION at /mnt/archinstall/boot"
