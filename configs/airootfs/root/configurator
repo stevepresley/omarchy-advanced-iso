@@ -25,7 +25,7 @@ log_debug() {
 INSTALL_MODE=""
 INSTALL_DISK=""
 BOOT_PARTITION=""
-BOOT_PARTITION_FSTYPE=""
+ROOT_PARTITION=""
 SUMMARY_INSTALL_TARGET=""
 SUMMARY_BOOT_TARGET=""
 
@@ -98,65 +98,53 @@ select_boot_partition() {
   local root_part="$1"
   local root_disk
   root_disk=$(lsblk -no PKNAME "$root_part" 2>/dev/null | head -n1)
+  root_disk=${root_disk:-$(basename "$(lsblk -no PKNAME "$root_part" 2>/dev/null)") }
 
-  local candidate_names=()
-  local candidate_fstypes=()
-  local candidate_display=()
+  local best_part=""
+  local best_fstype=""
+  local best_score=1000000
 
-  while read -r name fstype size type mountpoint pkname; do
+  while read -r name type size fstype mountpoint pkname; do
     [[ "$type" != "part" ]] && continue
     [[ "$name" == "$root_part" ]] && continue
-    local display="$name ($size, ${fstype:-unknown}"
+
+    local score=0
+    if [[ -n "$root_disk" && "$pkname" != "$root_disk" ]]; then
+      score=$((score + 100))
+    fi
+
+    local size_bytes=$size
+    if (( size_bytes < 200 * 1024 * 1024 )); then
+      continue
+    fi
+    if (( size_bytes > 8 * 1024 * 1024 * 1024 )); then
+      score=$((score + 50))
+    fi
+
+    case "${fstype,,}" in
+      vfat|fat|fat32|efi|msdos) ;;
+      "") score=$((score + 20)) ;;
+      *) score=$((score + 40)) ;;
+    esac
+
     if [[ -n "$mountpoint" ]]; then
-      display="$display, mounted at $mountpoint"
+      score=$((score + 5))
     fi
-    if [[ -n "$root_disk" && "$pkname" == "$root_disk" ]]; then
-      display="$display, same disk"
+
+    if (( score < best_score )); then
+      best_part="$name"
+      best_fstype="$fstype"
+      best_score=$score
     fi
-    display="$display)"
-    candidate_names+=("$name")
-    candidate_fstypes+=("$fstype")
-    candidate_display+=("$display")
-  done < <(lsblk -lnpo NAME,FSTYPE,SIZE,TYPE,MOUNTPOINT,PKNAME)
+  done < <(lsblk -bnpo NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,PKNAME)
 
-  if ((${#candidate_names[@]} == 0)); then
-    abort "No sibling partition available for boot files. Create or free an ESP first."
+  if [[ -z "$best_part" ]]; then
+    abort "No suitable EFI/boot partition found on disk ${root_disk:-unknown}. Create one or choose the entire disk."
   fi
 
-  if ((${#candidate_names[@]} == 1)); then
-    BOOT_PARTITION="${candidate_names[0]}"
-    BOOT_PARTITION_FSTYPE="${candidate_fstypes[0]}"
-    echo "$BOOT_PARTITION"
-    return 0
-  fi
-
-  local default_display=""
-  if [[ -n "$BOOT_PARTITION" ]]; then
-    for i in "${!candidate_names[@]}"; do
-      if [[ "${candidate_names[$i]}" == "$BOOT_PARTITION" ]]; then
-        default_display="${candidate_display[$i]}"
-        break
-      fi
-    done
-  fi
-
-  local selection
-  if [[ -n "$default_display" ]]; then
-    selection=$(printf '%s\n' "${candidate_display[@]}" | gum choose --header "Select EFI/boot partition" --selected "$default_display") || abort
-  else
-    selection=$(printf '%s\n' "${candidate_display[@]}" | gum choose --header "Select EFI/boot partition") || abort
-  fi
-
-  for i in "${!candidate_display[@]}"; do
-    if [[ "${candidate_display[$i]}" == "$selection" ]]; then
-      BOOT_PARTITION="${candidate_names[$i]}"
-      BOOT_PARTITION_FSTYPE="${candidate_fstypes[$i]}"
-      echo "$BOOT_PARTITION"
-      return 0
-    fi
-  done
-
-  abort "Invalid boot partition selection"
+  BOOT_PARTITION="$best_part"
+  BOOT_PARTITION_FSTYPE="$best_fstype"
+  log_debug "Auto-selected boot partition $BOOT_PARTITION (fstype=${BOOT_PARTITION_FSTYPE:-unknown})"
 }
 
 prepare_disk_layout() {
@@ -193,10 +181,46 @@ prepare_install_target() {
   if [[ "$INSTALL_MODE" == "disk" ]]; then
     [[ -z "$INSTALL_DISK" ]] && abort "No disk selected for installation"
     prepare_disk_layout "$INSTALL_DISK"
+    SUMMARY_INSTALL_TARGET="$partition"
+    ROOT_PARTITION="$partition"
   else
-    [[ -n "$BOOT_PARTITION" ]] || BOOT_PARTITION=$(select_boot_partition "$partition")
+    local min_bytes=$((16 * 1024 * 1024 * 1024))
+    local part_bytes
+    part_bytes=$(blockdev --getsize64 "$partition" 2>/dev/null || echo 0)
+    if (( part_bytes < min_bytes )); then
+      abort "Selected partition $partition is too small ($(numfmt --to=iec $part_bytes)); minimum required is 16GiB."
+    fi
+
+    log_debug "Repartitioning $partition into ESP + root"
+
+    [[ -z "${partition}" ]] && abort "No partition selected"
+    cleanup_disk_children "$partition"
+
+    wipefs -a "$partition" >>"$CONFIG_LOG" 2>&1 || log_debug "wipefs reported issues on $partition"
+    if ! parted -s "$partition" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to create GPT label on $partition"
+    fi
+    if ! parted -s "$partition" mkpart primary fat32 1MiB 513MiB >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to create ESP inside $partition"
+    fi
+    if ! parted -s "$partition" set 1 esp on >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to mark ESP inside $partition"
+    fi
+    if ! parted -s "$partition" mkpart primary btrfs 513MiB 100% >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to create root slice inside $partition"
+    fi
+
+    partprobe "$partition" >>"$CONFIG_LOG" 2>&1 || true
+    if command -v udevadm >/dev/null 2>&1; then
+      udevadm settle >>"$CONFIG_LOG" 2>&1 || true
+    fi
+
+    BOOT_PARTITION=$(lsblk -lnpo NAME "$partition" | awk 'NR==2')
+    ROOT_PARTITION=$(lsblk -lnpo NAME "$partition" | awk 'NR==3')
+    [[ -n "$BOOT_PARTITION" && -n "$ROOT_PARTITION" ]] || abort "Failed to detect new partitions inside $partition"
+    SUMMARY_INSTALL_TARGET="$ROOT_PARTITION"
     SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
-    log_debug "Using boot partition $BOOT_PARTITION for installation"
+    log_debug "Created ESP $BOOT_PARTITION and root $ROOT_PARTITION inside $partition"
   fi
 }
 
@@ -366,9 +390,8 @@ partition_form() {
     partition="$selected_device"
     disk="/dev/$(lsblk -no PKNAME "$partition" 2>/dev/null | head -n1)"
     [[ -n "$disk" ]] || disk="(unknown)"
-    BOOT_PARTITION=$(select_boot_partition "$partition")
     SUMMARY_INSTALL_TARGET="$partition"
-    SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+    SUMMARY_BOOT_TARGET="[Auto-selecting EFI partition]"
   fi
 }
 
