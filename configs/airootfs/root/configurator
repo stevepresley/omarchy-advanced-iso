@@ -29,226 +29,248 @@ ROOT_PARTITION=""
 SUMMARY_INSTALL_TARGET=""
 SUMMARY_BOOT_TARGET=""
 
-cleanup_disk_children() {
-  local disk="$1"
-  log_debug "Detaching existing mappings on $disk"
-  {
-    echo "--- lsblk tree for $disk ---"
-    lsblk -lnpo NAME,TYPE,MOUNTPOINTS "$disk"
-    echo "--- /proc/swaps ---"
-    cat /proc/swaps
-  } >>"$CONFIG_LOG" 2>&1
+# COMMENTED OUT 2025-11-04: cleanup_disk_children() - functionality moved to partition-select
+# This function is now handled by /root/omarchy/bin/omarchy-partition-select
+# Keeping for reference but not calling anywhere
+#
+# cleanup_disk_children() {
+#   local disk="$1"
+#   log_debug "Detaching existing mappings on $disk"
+#   {
+#     echo "--- lsblk tree for $disk ---"
+#     lsblk -lnpo NAME,TYPE,MOUNTPOINTS "$disk"
+#     echo "--- /proc/swaps ---"
+#     cat /proc/swaps
+#   } >>"$CONFIG_LOG" 2>&1
+#
+#   while read -r child child_type; do
+#     [[ -z "$child" ]] && continue
+#     log_debug "Processing child $child (type=$child_type)"
+#     case "$child_type" in
+#       part)
+#         if awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null | grep -Fxq "$child"; then
+#           log_debug "swapoff $child"
+#           swapoff "$child" >>"$CONFIG_LOG" 2>&1 || log_debug "swapoff failed for $child"
+#         fi
+#         mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
+#         if ((${#targets[@]})); then
+#           mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF' | sort -r)
+#         fi
+#         for target in "${targets[@]}"; do
+#           [[ -z "$target" ]] && continue
+#           log_debug "umount $target"
+#           if ! umount "$target" >>"$CONFIG_LOG" 2>&1; then
+#             log_debug "umount failed for $target, retrying with -R"
+#             umount -R "$target" >>"$CONFIG_LOG" 2>&1 || log_debug "umount -R failed for $target"
+#           fi
+#         done
+#         ;;
+#       crypt)
+#         mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
+#         if ((${#targets[@]})); then
+#           mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF' | sort -r)
+#         fi
+#         for target in "${targets[@]}"; do
+#           [[ -z "$target" ]] && continue
+#           log_debug "umount $target (crypt)"
+#           if ! umount "$target" >>"$CONFIG_LOG" 2>&1; then
+#             log_debug "umount failed for $target, retrying with -R"
+#             umount -R "$target" >>"$CONFIG_LOG" 2>&1 || log_debug "umount -R failed for $target"
+#           fi
+#         done
+#         if command -v cryptsetup >/dev/null 2>&1; then
+#           local mapper_name
+#           mapper_name=$(lsblk -no NAME "$child" 2>/dev/null | head -n1)
+#           if [[ -n "$mapper_name" ]]; then
+#             log_debug "Closing LUKS mapping $mapper_name"
+#             cryptsetup close "$mapper_name" >>"$CONFIG_LOG" 2>&1 || log_debug "Failed to close $mapper_name"
+#           fi
+#         fi
+#         ;;
+#       *)
+#         log_debug "No cleanup actions for child type $child_type"
+#         ;;
+#     esac
+#   done < <(lsblk -lnpo NAME,TYPE "$disk" | tail -n +2)
+#
+#   if command -v udevadm >/dev/null 2>&1; then
+#     udevadm settle >>"$CONFIG_LOG" 2>&1 || true
+#   fi
+# }
 
-  while read -r child child_type; do
-    [[ -z "$child" ]] && continue
-    log_debug "Processing child $child (type=$child_type)"
-    case "$child_type" in
-      part)
-        if awk 'NR>1 {print $1}' /proc/swaps 2>/dev/null | grep -Fxq "$child"; then
-          log_debug "swapoff $child"
-          swapoff "$child" >>"$CONFIG_LOG" 2>&1 || log_debug "swapoff failed for $child"
-        fi
-        mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
-        if ((${#targets[@]})); then
-          mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF' | sort -r)
-        fi
-        for target in "${targets[@]}"; do
-          [[ -z "$target" ]] && continue
-          log_debug "umount $target"
-          if ! umount "$target" >>"$CONFIG_LOG" 2>&1; then
-            log_debug "umount failed for $target, retrying with -R"
-            umount -R "$target" >>"$CONFIG_LOG" 2>&1 || log_debug "umount -R failed for $target"
-          fi
-        done
-        ;;
-      crypt)
-        mapfile -t targets < <(findmnt -rn "$child" -o TARGET 2>/dev/null || true)
-        if ((${#targets[@]})); then
-          mapfile -t targets < <(printf '%s\n' "${targets[@]}" | awk 'NF' | sort -r)
-        fi
-        for target in "${targets[@]}"; do
-          [[ -z "$target" ]] && continue
-          log_debug "umount $target (crypt)"
-          if ! umount "$target" >>"$CONFIG_LOG" 2>&1; then
-            log_debug "umount failed for $target, retrying with -R"
-            umount -R "$target" >>"$CONFIG_LOG" 2>&1 || log_debug "umount -R failed for $target"
-          fi
-        done
-        if command -v cryptsetup >/dev/null 2>&1; then
-          local mapper_name
-          mapper_name=$(lsblk -no NAME "$child" 2>/dev/null | head -n1)
-          if [[ -n "$mapper_name" ]]; then
-            log_debug "Closing LUKS mapping $mapper_name"
-            cryptsetup close "$mapper_name" >>"$CONFIG_LOG" 2>&1 || log_debug "Failed to close $mapper_name"
-          fi
-        fi
-        ;;
-      *)
-        log_debug "No cleanup actions for child type $child_type"
-        ;;
-    esac
-  done < <(lsblk -lnpo NAME,TYPE "$disk" | tail -n +2)
+# COMMENTED OUT 2025-11-04: select_boot_partition() - dead code, never called
+# This function was intended to auto-select a boot partition, but:
+# 1. It's never invoked anywhere in the configurator
+# 2. Boot partition selection is now handled by partition-select
+# Keeping for reference but should be removed in future cleanup
+#
+# select_boot_partition() {
+#   local root_part="$1"
+#   local root_disk
+#   root_disk=$(lsblk -no PKNAME "$root_part" 2>/dev/null | head -n1)
+#   root_disk=${root_disk:-$(basename "$(lsblk -no PKNAME "$root_part" 2>/dev/null)") }
+#
+#   local best_part=""
+#   local best_fstype=""
+#   local best_score=1000000
+#
+#   while read -r name type size fstype mountpoint pkname; do
+#     [[ "$type" != "part" ]] && continue
+#     [[ "$name" == "$root_part" ]] && continue
+#
+#     local score=0
+#     if [[ -n "$root_disk" && "$pkname" != "$root_disk" ]]; then
+#       score=$((score + 100))
+#     fi
+#
+#     local size_bytes=$size
+#     if (( size_bytes < 200 * 1024 * 1024 )); then
+#       continue
+#     fi
+#     if (( size_bytes > 8 * 1024 * 1024 * 1024 )); then
+#       score=$((score + 50))
+#     fi
+#
+#     case "${fstype,,}" in
+#       vfat|fat|fat32|efi|msdos) ;;
+#       "") score=$((score + 20)) ;;
+#       *) score=$((score + 40)) ;;
+#     esac
+#
+#     if [[ -n "$mountpoint" ]]; then
+#       score=$((score + 5))
+#     fi
+#
+#     if (( score < best_score )); then
+#       best_part="$name"
+#       best_fstype="$fstype"
+#       best_score=$score
+#     fi
+#   done < <(lsblk -bnpo NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,PKNAME)
+#
+#   if [[ -z "$best_part" ]]; then
+#     abort "No suitable EFI/boot partition found on disk ${root_disk:-unknown}. Create one or choose the entire disk."
+#   fi
+#
+#   BOOT_PARTITION="$best_part"
+#   BOOT_PARTITION_FSTYPE="$best_fstype"
+#   log_debug "Auto-selected boot partition $BOOT_PARTITION (fstype=${BOOT_PARTITION_FSTYPE:-unknown})"
+# }
 
-  if command -v udevadm >/dev/null 2>&1; then
-    udevadm settle >>"$CONFIG_LOG" 2>&1 || true
-  fi
-}
+# COMMENTED OUT 2025-11-04: prepare_disk_layout() - functionality moved to partition-select
+# This function creates ESP and root partitions when a whole disk is selected
+# All partition creation/formatting logic is now handled by partition-select
+# Keeping for reference but not calling anywhere
+#
+# prepare_disk_layout() {
+#   local disk="$1"
+#   cleanup_disk_children "$disk"
+#
+#   log_debug "Creating ESP and root partitions on $disk"
+#   if ! wipefs -a "$disk" >>"$CONFIG_LOG" 2>&1; then
+#     log_debug "wipefs failed on $disk"
+#     abort "Failed to wipe disk signatures"
+#   fi
+#   if ! parted -s "$disk" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
+#     abort "Failed to create GPT label"
+#   fi
+#   if ! parted -s "$disk" mkpart primary fat32 1MiB 2049MiB >>"$CONFIG_LOG" 2>&1; then
+#     abort "Failed to create FAT32 boot partition"
+#   fi
+#   parted -s "$disk" set 1 esp on >>"$CONFIG_LOG" 2>&1 || abort "Failed to mark ESP partition"
+#   if ! parted -s "$disk" mkpart primary btrfs 2049MiB 100% >>"$CONFIG_LOG" 2>&1; then
+#     abort "Failed to create root partition"
+#   fi
+#   partprobe "$disk" >>"$CONFIG_LOG" 2>&1 || true
+#   if command -v udevadm >/dev/null 2>&1; then
+#     udevadm settle >>"$CONFIG_LOG" 2>&1 || true
+#   fi
+#
+#   BOOT_PARTITION=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
+#   partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==3')
+#   SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+#   log_debug "Created boot partition $BOOT_PARTITION and root partition $partition on $disk"
+# }
 
-select_boot_partition() {
-  local root_part="$1"
-  local root_disk
-  root_disk=$(lsblk -no PKNAME "$root_part" 2>/dev/null | head -n1)
-  root_disk=${root_disk:-$(basename "$(lsblk -no PKNAME "$root_part" 2>/dev/null)") }
-
-  local best_part=""
-  local best_fstype=""
-  local best_score=1000000
-
-  while read -r name type size fstype mountpoint pkname; do
-    [[ "$type" != "part" ]] && continue
-    [[ "$name" == "$root_part" ]] && continue
-
-    local score=0
-    if [[ -n "$root_disk" && "$pkname" != "$root_disk" ]]; then
-      score=$((score + 100))
-    fi
-
-    local size_bytes=$size
-    if (( size_bytes < 200 * 1024 * 1024 )); then
-      continue
-    fi
-    if (( size_bytes > 8 * 1024 * 1024 * 1024 )); then
-      score=$((score + 50))
-    fi
-
-    case "${fstype,,}" in
-      vfat|fat|fat32|efi|msdos) ;;
-      "") score=$((score + 20)) ;;
-      *) score=$((score + 40)) ;;
-    esac
-
-    if [[ -n "$mountpoint" ]]; then
-      score=$((score + 5))
-    fi
-
-    if (( score < best_score )); then
-      best_part="$name"
-      best_fstype="$fstype"
-      best_score=$score
-    fi
-  done < <(lsblk -bnpo NAME,TYPE,SIZE,FSTYPE,MOUNTPOINT,PKNAME)
-
-  if [[ -z "$best_part" ]]; then
-    abort "No suitable EFI/boot partition found on disk ${root_disk:-unknown}. Create one or choose the entire disk."
-  fi
-
-  BOOT_PARTITION="$best_part"
-  BOOT_PARTITION_FSTYPE="$best_fstype"
-  log_debug "Auto-selected boot partition $BOOT_PARTITION (fstype=${BOOT_PARTITION_FSTYPE:-unknown})"
-}
-
-prepare_disk_layout() {
-  local disk="$1"
-  cleanup_disk_children "$disk"
-
-  log_debug "Creating ESP and root partitions on $disk"
-  if ! wipefs -a "$disk" >>"$CONFIG_LOG" 2>&1; then
-    log_debug "wipefs failed on $disk"
-    abort "Failed to wipe disk signatures"
-  fi
-  if ! parted -s "$disk" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
-    abort "Failed to create GPT label"
-  fi
-  if ! parted -s "$disk" mkpart primary fat32 1MiB 2049MiB >>"$CONFIG_LOG" 2>&1; then
-    abort "Failed to create FAT32 boot partition"
-  fi
-  parted -s "$disk" set 1 esp on >>"$CONFIG_LOG" 2>&1 || abort "Failed to mark ESP partition"
-  if ! parted -s "$disk" mkpart primary btrfs 2049MiB 100% >>"$CONFIG_LOG" 2>&1; then
-    abort "Failed to create root partition"
-  fi
-  partprobe "$disk" >>"$CONFIG_LOG" 2>&1 || true
-  if command -v udevadm >/dev/null 2>&1; then
-    udevadm settle >>"$CONFIG_LOG" 2>&1 || true
-  fi
-
-  BOOT_PARTITION=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
-  partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==3')
-  SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
-  log_debug "Created boot partition $BOOT_PARTITION and root partition $partition on $disk"
-}
-
-prepare_install_target() {
-  if [[ "$INSTALL_MODE" == "disk" ]]; then
-    [[ -z "$INSTALL_DISK" ]] && abort "No disk selected for installation"
-    prepare_disk_layout "$INSTALL_DISK"
-    SUMMARY_INSTALL_TARGET="$partition"
-    ROOT_PARTITION="$partition"
-  else
-    local min_bytes=$((16 * 1024 * 1024 * 1024))
-    local part_bytes
-    part_bytes=$(blockdev --getsize64 "$partition" 2>/dev/null || echo 0)
-    if (( part_bytes < min_bytes )); then
-      abort "Selected partition $partition is too small ($(numfmt --to=iec $part_bytes)); minimum required is 16GiB."
-    fi
-
-    log_debug "Replacing selected partition with ESP + root partitions"
-
-    [[ -z "${partition}" ]] && abort "No partition selected"
-
-    # Get the disk and partition number from the selected partition
-    local disk
-    disk=$(lsblk -no PKNAME "$partition" 2>/dev/null | head -n1)
-    [[ -z "$disk" ]] && abort "Failed to determine disk for partition $partition"
-
-    # Extract partition number from device path (e.g., 2 from /dev/sdb2)
-    local partnum
-    partnum="${partition##*[!0-9]}"
-    [[ -z "$partnum" ]] && abort "Failed to extract partition number from $partition"
-
-    log_debug "Deleting partition $partnum from disk $disk"
-
-    # Clean up any mounted filesystems or swap on the disk first
-    cleanup_disk_children "$disk"
-
-    # Delete the selected partition from the disk's partition table
-    if ! parted -s "$disk" rm "$partnum" >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to delete partition $partition from $disk"
-    fi
-
-    # Create new ESP partition (FAT32, 1MiB to 2049MiB = ~2GiB)
-    log_debug "Creating new ESP partition on $disk"
-    if ! parted -s "$disk" mkpart primary fat32 1MiB 2049MiB >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to create ESP partition on $disk"
-    fi
-
-    # Mark the new first partition as ESP
-    if ! parted -s "$disk" set 1 esp on >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to mark ESP partition"
-    fi
-
-    # Create new root partition (Btrfs, 2049MiB to end of disk)
-    log_debug "Creating new root partition on $disk"
-    if ! parted -s "$disk" mkpart primary btrfs 2049MiB 100% >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to create root partition on $disk"
-    fi
-
-    # Update kernel partition table
-    partprobe "$disk" >>"$CONFIG_LOG" 2>&1 || true
-    if command -v udevadm >/dev/null 2>&1; then
-      udevadm settle >>"$CONFIG_LOG" 2>&1 || true
-    fi
-
-    # Find the newly created partitions
-    BOOT_PARTITION=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
-    partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==3')
-    [[ -n "$BOOT_PARTITION" && -n "$partition" ]] || abort "Failed to detect new partitions on $disk"
-
-    ROOT_PARTITION="$partition"
-    SUMMARY_INSTALL_TARGET="$ROOT_PARTITION"
-    SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
-    log_debug "Successfully replaced partition with ESP $BOOT_PARTITION and root $ROOT_PARTITION on $disk"
-  fi
-}
+# COMMENTED OUT 2025-11-04: prepare_install_target() - main orchestrator, now handled by partition-select
+# This function was the main orchestrator that:
+# 1. Called prepare_disk_layout() for disk selection
+# 2. Handled partition deletion and replacement for partition selection
+# All of this logic is now handled INSIDE partition-select, which returns BOOT|INSTALL format
+# Keeping for reference but not calling anywhere
+#
+# prepare_install_target() {
+#   if [[ "$INSTALL_MODE" == "disk" ]]; then
+#     [[ -z "$INSTALL_DISK" ]] && abort "No disk selected for installation"
+#     prepare_disk_layout "$INSTALL_DISK"
+#     SUMMARY_INSTALL_TARGET="$partition"
+#     ROOT_PARTITION="$partition"
+#   else
+#     local min_bytes=$((16 * 1024 * 1024 * 1024))
+#     local part_bytes
+#     part_bytes=$(blockdev --getsize64 "$partition" 2>/dev/null || echo 0)
+#     if (( part_bytes < min_bytes )); then
+#       abort "Selected partition $partition is too small ($(numfmt --to=iec $part_bytes)); minimum required is 16GiB."
+#     fi
+#
+#     log_debug "Replacing selected partition with ESP + root partitions"
+#
+#     [[ -z "${partition}" ]] && abort "No partition selected"
+#
+#     # Get the disk and partition number from the selected partition
+#     local disk
+#     disk=$(lsblk -no PKNAME "$partition" 2>/dev/null | head -n1)
+#     [[ -z "$disk" ]] && abort "Failed to determine disk for partition $partition"
+#
+#     # Extract partition number from device path (e.g., 2 from /dev/sdb2)
+#     local partnum
+#     partnum="${partition##*[!0-9]}"
+#     [[ -z "$partnum" ]] && abort "Failed to extract partition number from $partition"
+#
+#     log_debug "Deleting partition $partnum from disk $disk"
+#
+#     # Clean up any mounted filesystems or swap on the disk first
+#     cleanup_disk_children "$disk"
+#
+#     # Delete the selected partition from the disk's partition table
+#     if ! parted -s "$disk" rm "$partnum" >>"$CONFIG_LOG" 2>&1; then
+#       abort "Failed to delete partition $partition from $disk"
+#     fi
+#
+#     # Create new ESP partition (FAT32, 1MiB to 2049MiB = ~2GiB)
+#     log_debug "Creating new ESP partition on $disk"
+#     if ! parted -s "$disk" mkpart primary fat32 1MiB 2049MiB >>"$CONFIG_LOG" 2>&1; then
+#       abort "Failed to create ESP partition on $disk"
+#     fi
+#
+#     # Mark the new first partition as ESP
+#     if ! parted -s "$disk" set 1 esp on >>"$CONFIG_LOG" 2>&1; then
+#       abort "Failed to mark ESP partition"
+#     fi
+#
+#     # Create new root partition (Btrfs, 2049MiB to end of disk)
+#     log_debug "Creating new root partition on $disk"
+#     if ! parted -s "$disk" mkpart primary btrfs 2049MiB 100% >>"$CONFIG_LOG" 2>&1; then
+#       abort "Failed to create root partition on $disk"
+#     fi
+#
+#     # Update kernel partition table
+#     partprobe "$disk" >>"$CONFIG_LOG" 2>&1 || true
+#     if command -v udevadm >/dev/null 2>&1; then
+#       udevadm settle >>"$CONFIG_LOG" 2>&1 || true
+#     fi
+#
+#     # Find the newly created partitions
+#     BOOT_PARTITION=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
+#     partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==3')
+#     [[ -n "$BOOT_PARTITION" && -n "$partition" ]] || abort "Failed to detect new partitions on $disk"
+#
+#     ROOT_PARTITION="$partition"
+#     SUMMARY_INSTALL_TARGET="$ROOT_PARTITION"
+#     SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+#     log_debug "Successfully replaced partition with ESP $BOOT_PARTITION and root $ROOT_PARTITION on $disk"
+#   fi
+# }
 
 mount_boot_partition() {
   if [[ -z "${BOOT_PARTITION:-}" ]]; then
@@ -398,27 +420,28 @@ user_form
 partition_form() {
   step "Let's select where to install Omarchy..."
 
-  selected_device=$(/root/omarchy/bin/omarchy-partition-select) || abort "No valid install target selected"
-  device_type=$(lsblk -no TYPE "$selected_device" 2>/dev/null | head -n1)
+  # MODIFIED 2025-11-04: partition-select now returns BOOT|INSTALL pipe-delimited format
+  # Instead of a single device path, we get both boot and install partitions
+  selected_partitions=$(/root/omarchy/bin/omarchy-partition-select) || abort "No valid install target selected"
 
-  BOOT_PARTITION=""
-  SUMMARY_BOOT_TARGET=""
+  # Parse the pipe-delimited return: BOOT_PARTITION|INSTALL_PARTITION
+  # Example: /dev/sdb1|/dev/sdb2
+  BOOT_PARTITION="${selected_partitions%|*}"  # Extract first part (boot)
+  INSTALL_PARTITION="${selected_partitions#*|}"  # Extract second part (install)
 
-  if [[ "$device_type" == "disk" ]]; then
-    INSTALL_MODE="disk"
-    INSTALL_DISK="$selected_device"
-    disk="$selected_device"
-    partition=""
-    SUMMARY_INSTALL_TARGET="$selected_device (entire disk)"
-    SUMMARY_BOOT_TARGET="[Will create ESP automatically]"
-  else
-    INSTALL_MODE="partition"
-    partition="$selected_device"
-    disk="/dev/$(lsblk -no PKNAME "$partition" 2>/dev/null | head -n1)"
-    [[ -n "$disk" ]] || disk="(unknown)"
-    SUMMARY_INSTALL_TARGET="$partition"
-    SUMMARY_BOOT_TARGET="[Auto-selecting EFI partition]"
-  fi
+  [[ -n "$BOOT_PARTITION" && -n "$INSTALL_PARTITION" ]] || abort "Invalid partition format from partition-select"
+
+  # Set global variables for the rest of the configurator
+  partition="$INSTALL_PARTITION"
+  ROOT_PARTITION="$INSTALL_PARTITION"
+  disk=$(lsblk -no PKNAME "$INSTALL_PARTITION" 2>/dev/null | head -n1)
+  [[ -n "$disk" ]] || disk="(unknown)"
+
+  # Update summary display
+  SUMMARY_INSTALL_TARGET="$INSTALL_PARTITION"
+  SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
+
+  log_debug "Received partitions from partition-select: BOOT=$BOOT_PARTITION, INSTALL=$INSTALL_PARTITION"
 }
 
 partition_form
@@ -435,58 +458,70 @@ while true; do
   fi
 done
 
-prepare_install_target
-if [[ "$INSTALL_MODE" == "disk" && -n "$partition" ]]; then
-  SUMMARY_INSTALL_TARGET="$partition"
-fi
-
-# Format and mount selected partition
-step "Preparing partition for installation..."
-
-# Unmount partition if already mounted
-if mountpoint -q "$partition"; then
-  umount "$partition" 2>/dev/null || true
-fi
-
-# Unmount any existing /mnt/archinstall
-if mountpoint -q /mnt/archinstall; then
-  umount -R /mnt/archinstall 2>/dev/null || true
-fi
-
-# Wipe existing filesystem signatures (handles previous LUKS headers, etc.)
-echo "Wiping existing filesystem signatures..."
-wipefs -a "$partition" >/dev/null 2>&1 || abort "Failed to wipe partition signatures"
-
-# Format partition as BTRFS with compression
-echo "Formatting ${partition} as BTRFS..."
-mkfs.btrfs -f "$partition" >/dev/null 2>&1 || abort "Failed to format partition"
-
-# Create mount point
-mkdir -p /mnt/archinstall
-
-# Mount partition
-echo "Mounting partition at /mnt/archinstall..."
-mount -o compress=zstd "$partition" /mnt/archinstall || abort "Failed to mount partition"
-
-# Create BTRFS subvolumes
-echo "Creating BTRFS subvolumes..."
-btrfs subvolume create /mnt/archinstall/@ || abort "Failed to create @ subvolume"
-btrfs subvolume create /mnt/archinstall/@home || abort "Failed to create @home subvolume"
-btrfs subvolume create /mnt/archinstall/@log || abort "Failed to create @log subvolume"
-btrfs subvolume create /mnt/archinstall/@pkg || abort "Failed to create @pkg subvolume"
-
-# Unmount to remount with subvolumes
-umount /mnt/archinstall
-
-# Remount with subvolumes
-mount -o compress=zstd,subvol=@ "$partition" /mnt/archinstall || abort "Failed to mount @ subvolume"
-mkdir -p /mnt/archinstall/{home,var/log,var/cache/pacman/pkg}
-mount -o compress=zstd,subvol=@home "$partition" /mnt/archinstall/home || abort "Failed to mount @home subvolume"
-mount -o compress=zstd,subvol=@log "$partition" /mnt/archinstall/var/log || abort "Failed to mount @log subvolume"
-mount -o compress=zstd,subvol=@pkg "$partition" /mnt/archinstall/var/cache/pacman/pkg || abort "Failed to mount @pkg subvolume"
-
-mkdir -p /mnt/archinstall/boot
-mount_boot_partition
+# COMMENTED OUT 2025-11-04: prepare_install_target() call + formatting/mounting block
+# All partition handling is now delegated to partition-select which:
+# 1. Handles disk wiping and partition creation
+# 2. Creates ESP and root partitions
+# 3. Formats both partitions (FAT32 for ESP, Btrfs for root)
+# 4. Creates BTRFS subvolumes (@, @home, @log, @pkg)
+# 5. Mounts both partitions at /mnt/archinstall with subvolumes
+# 6. Returns BOOT|INSTALL format with paths to partition-select
+#
+# The configurator now simply receives the already-formatted partitions
+# and passes them to archinstall for installation
+#
+# prepare_install_target
+# if [[ "$INSTALL_MODE" == "disk" && -n "$partition" ]]; then
+#   SUMMARY_INSTALL_TARGET="$partition"
+# fi
+#
+# # Format and mount selected partition
+# step "Preparing partition for installation..."
+#
+# # Unmount partition if already mounted
+# if mountpoint -q "$partition"; then
+#   umount "$partition" 2>/dev/null || true
+# fi
+#
+# # Unmount any existing /mnt/archinstall
+# if mountpoint -q /mnt/archinstall; then
+#   umount -R /mnt/archinstall 2>/dev/null || true
+# fi
+#
+# # Wipe existing filesystem signatures (handles previous LUKS headers, etc.)
+# echo "Wiping existing filesystem signatures..."
+# wipefs -a "$partition" >/dev/null 2>&1 || abort "Failed to wipe partition signatures"
+#
+# # Format partition as BTRFS with compression
+# echo "Formatting ${partition} as BTRFS..."
+# mkfs.btrfs -f "$partition" >/dev/null 2>&1 || abort "Failed to format partition"
+#
+# # Create mount point
+# mkdir -p /mnt/archinstall
+#
+# # Mount partition
+# echo "Mounting partition at /mnt/archinstall..."
+# mount -o compress=zstd "$partition" /mnt/archinstall || abort "Failed to mount partition"
+#
+# # Create BTRFS subvolumes
+# echo "Creating BTRFS subvolumes..."
+# btrfs subvolume create /mnt/archinstall/@ || abort "Failed to create @ subvolume"
+# btrfs subvolume create /mnt/archinstall/@home || abort "Failed to create @home subvolume"
+# btrfs subvolume create /mnt/archinstall/@log || abort "Failed to create @log subvolume"
+# btrfs subvolume create /mnt/archinstall/@pkg || abort "Failed to create @pkg subvolume"
+#
+# # Unmount to remount with subvolumes
+# umount /mnt/archinstall
+#
+# # Remount with subvolumes
+# mount -o compress=zstd,subvol=@ "$partition" /mnt/archinstall || abort "Failed to mount @ subvolume"
+# mkdir -p /mnt/archinstall/{home,var/log,var/cache/pacman/pkg}
+# mount -o compress=zstd,subvol=@home "$partition" /mnt/archinstall/home || abort "Failed to mount @home subvolume"
+# mount -o compress=zstd,subvol=@log "$partition" /mnt/archinstall/var/log || abort "Failed to mount @log subvolume"
+# mount -o compress=zstd,subvol=@pkg "$partition" /mnt/archinstall/var/cache/pacman/pkg || abort "Failed to mount @pkg subvolume"
+#
+# mkdir -p /mnt/archinstall/boot
+# mount_boot_partition
 
 # STEP 4: ADVANCED OPTIONS
 
