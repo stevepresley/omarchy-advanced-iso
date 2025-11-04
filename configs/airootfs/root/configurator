@@ -191,36 +191,62 @@ prepare_install_target() {
       abort "Selected partition $partition is too small ($(numfmt --to=iec $part_bytes)); minimum required is 16GiB."
     fi
 
-    log_debug "Repartitioning $partition into ESP + root"
+    log_debug "Replacing selected partition with ESP + root partitions"
 
     [[ -z "${partition}" ]] && abort "No partition selected"
-    cleanup_disk_children "$partition"
 
-    wipefs -a "$partition" >>"$CONFIG_LOG" 2>&1 || log_debug "wipefs reported issues on $partition"
-    if ! parted -s "$partition" mklabel gpt >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to create GPT label on $partition"
-    fi
-    if ! parted -s "$partition" mkpart primary fat32 1MiB 513MiB >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to create ESP inside $partition"
-    fi
-    if ! parted -s "$partition" set 1 esp on >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to mark ESP inside $partition"
-    fi
-    if ! parted -s "$partition" mkpart primary btrfs 513MiB 100% >>"$CONFIG_LOG" 2>&1; then
-      abort "Failed to create root slice inside $partition"
+    # Get the disk and partition number from the selected partition
+    local disk
+    disk=$(lsblk -no PKNAME "$partition" 2>/dev/null | head -n1)
+    [[ -z "$disk" ]] && abort "Failed to determine disk for partition $partition"
+
+    # Extract partition number from device path (e.g., 2 from /dev/sdb2)
+    local partnum
+    partnum="${partition##*[!0-9]}"
+    [[ -z "$partnum" ]] && abort "Failed to extract partition number from $partition"
+
+    log_debug "Deleting partition $partnum from disk $disk"
+
+    # Clean up any mounted filesystems or swap on the disk first
+    cleanup_disk_children "$disk"
+
+    # Delete the selected partition from the disk's partition table
+    if ! parted -s "$disk" rm "$partnum" >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to delete partition $partition from $disk"
     fi
 
-    partprobe "$partition" >>"$CONFIG_LOG" 2>&1 || true
+    # Create new ESP partition (FAT32, 1MiB to 2049MiB = ~2GiB)
+    log_debug "Creating new ESP partition on $disk"
+    if ! parted -s "$disk" mkpart primary fat32 1MiB 2049MiB >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to create ESP partition on $disk"
+    fi
+
+    # Mark the new first partition as ESP
+    if ! parted -s "$disk" set 1 esp on >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to mark ESP partition"
+    fi
+
+    # Create new root partition (Btrfs, 2049MiB to end of disk)
+    log_debug "Creating new root partition on $disk"
+    if ! parted -s "$disk" mkpart primary btrfs 2049MiB 100% >>"$CONFIG_LOG" 2>&1; then
+      abort "Failed to create root partition on $disk"
+    fi
+
+    # Update kernel partition table
+    partprobe "$disk" >>"$CONFIG_LOG" 2>&1 || true
     if command -v udevadm >/dev/null 2>&1; then
       udevadm settle >>"$CONFIG_LOG" 2>&1 || true
     fi
 
-    BOOT_PARTITION=$(lsblk -lnpo NAME "$partition" | awk 'NR==2')
-    ROOT_PARTITION=$(lsblk -lnpo NAME "$partition" | awk 'NR==3')
-    [[ -n "$BOOT_PARTITION" && -n "$ROOT_PARTITION" ]] || abort "Failed to detect new partitions inside $partition"
+    # Find the newly created partitions
+    BOOT_PARTITION=$(lsblk -lnpo NAME "$disk" | awk 'NR==2')
+    partition=$(lsblk -lnpo NAME "$disk" | awk 'NR==3')
+    [[ -n "$BOOT_PARTITION" && -n "$partition" ]] || abort "Failed to detect new partitions on $disk"
+
+    ROOT_PARTITION="$partition"
     SUMMARY_INSTALL_TARGET="$ROOT_PARTITION"
     SUMMARY_BOOT_TARGET="$BOOT_PARTITION"
-    log_debug "Created ESP $BOOT_PARTITION and root $ROOT_PARTITION inside $partition"
+    log_debug "Successfully replaced partition with ESP $BOOT_PARTITION and root $ROOT_PARTITION on $disk"
   fi
 }
 
